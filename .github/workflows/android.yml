@@ -86,7 +86,24 @@ jobs:
         shell: bash
         run: |
           cat > export_presets.cfg <<'EOF'
-          [preset.0]
+          
+      - name: Import game assets
+        run: |
+          godot --headless --path . --editor --import
+
+      - name: Build APK
+        run: |
+          mkdir -p build
+          godot --headless --path . --export-debug "Android" build/DurakViolet.apk
+          test -s build/DurakViolet.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: DurakViolet-APK
+          path: build/DurakViolet.apk
+          if-no-files-found: error
+
 
           name="Android"
           platform="Android"
