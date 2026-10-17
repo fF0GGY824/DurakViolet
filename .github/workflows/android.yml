@@ -1,43 +1,96 @@
+name: Build Durak Violet APK
 
-          custom_features=""
-          export_filter="all_resources"
-          include_filter=""
-          exclude_filter=""
-          export_path="build/DurakViolet.apk"
-          encryption_include_filters=""
-          encryption_exclude_filters=""
-          encrypt_pck=false
-          encrypt_directory=false
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
 
-          [preset.0.options]
+jobs:
+  build-android:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
 
-          gradle_build/use_gradle_build=false
-          package/unique_name="com.durakviolet.game"
-          package/name="Durak Violet"
-          package/signed=true
-          architectures/armeabi-v7a=false
-          architectures/arm64-v8a=true
-          architectures/x86=false
-          architectures/x86_64=false
-          EOF
+    env:
+      GODOT_VERSION: '4.7.2'
+      GODOT_STATUS: 'stable'
 
-      - name: Import game assets
-        shell: bash
-        run: godot --headless --path . --editor --import
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
 
-      - name: Export Android debug APK
+      - name: Check Godot project files
         shell: bash
         run: |
-          mkdir -p build
-          godot --headless --path . --export-debug Android build/DurakViolet.apk
-          test -s build/DurakViolet.apk || { echo 'ERROR: APK was not created'; exit 1; }
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify build/DurakViolet.apk
-          ls -lh build/DurakViolet.apk
+          test -f project.godot || { echo 'ERROR: project.godot is missing from repository root'; exit 1; }
+          echo 'Godot project found.'
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
         with:
-          name: DurakViolet-APK
-          path: build/DurakViolet.apk
-          if-no-files-found: error
-          retention-days: 14
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools build-tools;35.0.0 platforms;android-35'
+
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          test -f "$ANDROID_HOME/platform-tools/adb"
+          test -f "$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          test -d "$ANDROID_HOME/platforms/android-35"
+
+      - name: Download Godot and matching export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_STATUS}"
+          curl -fL --retry 3 -o godot.zip "${BASE}/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.x86_64.zip"
+          unzip -q godot.zip
+          chmod +x "Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.x86_64"
+          sudo mv "Godot_v${GODOT_VERSION}-${GODOT_STATUS}_linux.x86_64" /usr/local/bin/godot
+          curl -fL --retry 3 -o templates.tpz "${BASE}/Godot_v${GODOT_VERSION}-${GODOT_STATUS}_export_templates.tpz"
+          mkdir -p "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_STATUS}"
+          unzip -q templates.tpz -d /tmp/godot-export-templates
+          cp -a /tmp/godot-export-templates/templates/. "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_STATUS}/"
+          godot --headless --version
+          test -f "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_STATUS}/android_debug.apk"
+
+      - name: Configure Godot Android paths and debug signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.config/godot" "$HOME/.android"
+          keytool -genkeypair -noprompt \
+            -keystore "$HOME/.android/debug.keystore" \
+            -alias androiddebugkey -storepass android -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname 'CN=Android Debug,O=Android,C=US'
+          cat > "$HOME/.config/godot/editor_settings-4.tres" <<EOF
+          [gd_resource type="EditorSettings" format=3]
+
+          [resource]
+          export/android/java_sdk_path = "$JAVA_HOME"
+          export/android/android_sdk_path = "$ANDROID_HOME"
+          export/android/debug_keystore = "$HOME/.android/debug.keystore"
+          export/android/debug_keystore_user = "androiddebugkey"
+          export/android/debug_keystore_pass = "android"
+          EOF
+
+      - name: Create Android export preset
+        shell: bash
+        run: |
+          cat > export_presets.cfg <<'EOF'
+          [preset.0]
+
+          name="Android"
+          platform="Android"
+          runnable=true
+          advanced_options=false
+          dedicated_server=false
+          custom_features=""
